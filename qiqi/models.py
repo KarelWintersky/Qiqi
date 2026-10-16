@@ -58,14 +58,13 @@ class SettingsPatch(BaseModel):
 # ---------- jobs ----------
 
 class OrderIn(BaseModel):
-    """Заказ партии превью/фуллсайза."""
     kind: Literal["preview", "fullsize"]
     count: int | None = Field(default=None, ge=1, le=64)
-    parent_file_id: int | None = None  # для fullsize
+    parent_file_id: int | None = None
+    size_name: str | None = None
 
 
 class JobResultIn(BaseModel):
-    """Воркер сообщает о результате одной задачи (одного файла)."""
     file_id: int
     status: Literal["done", "error"]
     path: str | None = None
@@ -74,7 +73,6 @@ class JobResultIn(BaseModel):
     steps: int | None = None
     cfg: float | None = None
     error: str | None = None
-
 
 # ---------- files ----------
 

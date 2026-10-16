@@ -24,13 +24,23 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "cfg_green": [2.0, 3.0],
         "cfg_orange": [1.5, 4.0],
         "preview": {
-            "count": 3,
             "steps": 20,
-            "size": [768, 768],
+            "count": 3,
+            "sizes": {
+                "square": [320, 320],
+                "wide":   [1472, 1104],
+                "tall":   [1104, 1472],
+            },
+            "default_size": "square",
         },
         "fullsize": {
             "steps": 40,
-            "size": [1280, 1280],
+            "sizes": {
+                "square": [1280, 1280],
+                "wide":   [1472, 1104],
+                "tall":   [1104, 1472],
+            },
+            "default_size": "square",
         },
     },
 }
@@ -47,7 +57,20 @@ class ServerConfig:
 @dataclass
 class QwenSizeConfig:
     steps: int = 20
-    size: tuple[int, int] = (768, 768)
+    count: int = 1                      # для fullsize не используется
+    sizes: dict[str, tuple[int, int]] = field(
+        default_factory=lambda: {"square": (768, 768)}
+    )
+    default_size: str = "square"
+
+    def resolve_size(self, name: str | None = None) -> tuple[int, int]:
+        key = name or self.default_size
+        if key not in self.sizes:
+            raise KeyError(f"unknown size name: {key}")
+        return self.sizes[key]
+
+    def size_names(self) -> list[str]:
+        return list(self.sizes.keys())
 
 
 @dataclass
@@ -56,10 +79,10 @@ class QwenConfig:
     cfg_green: tuple[float, float] = (2.0, 3.0)
     cfg_orange: tuple[float, float] = (1.5, 4.0)
     preview: QwenSizeConfig = field(
-        default_factory=lambda: QwenSizeConfig(steps=20, size=(768, 768))
+        default_factory=lambda: QwenSizeConfig(steps=20, count=3, sizes={"square": (320, 320)})
     )
     fullsize: QwenSizeConfig = field(
-        default_factory=lambda: QwenSizeConfig(steps=40, size=(1280, 1280))
+        default_factory=lambda: QwenSizeConfig(steps=40, sizes={"square": (1280, 1280)})
     )
 
 
@@ -80,7 +103,6 @@ class Settings:
     server: ServerConfig = field(default_factory=ServerConfig)
     qwen: QwenConfig = field(default_factory=QwenConfig)
 
-    # удобные алиасы (используются в api.py, app.js через /api/meta)
     @property
     def previews_dir(self) -> Path:
         return self.paths.previews_dir
@@ -136,6 +158,34 @@ def _resolve(base: Path, raw: str) -> Path:
     return p.resolve()
 
 
+def _parse_sizes(raw: Any) -> dict[str, tuple[int, int]]:
+    if not isinstance(raw, dict) or not raw:
+        return {"square": (768, 768)}
+    out: dict[str, tuple[int, int]] = {}
+    for name, wh in raw.items():
+        try:
+            w, h = int(wh[0]), int(wh[1])
+        except (TypeError, ValueError, IndexError):
+            continue
+        out[str(name)] = (w, h)
+    if not out:
+        out = {"square": (768, 768)}
+    return out
+
+
+def _parse_size_cfg(raw: dict, default_steps: int, default_count: int) -> QwenSizeConfig:
+    sizes = _parse_sizes(raw.get("sizes"))
+    default_size = str(raw.get("default_size") or next(iter(sizes)))
+    if default_size not in sizes:
+        default_size = next(iter(sizes))
+    return QwenSizeConfig(
+        steps=int(raw.get("steps", default_steps)),
+        count=int(raw.get("count", default_count)),
+        sizes=sizes,
+        default_size=default_size,
+    )
+
+
 def load_settings(config_path: Path | None = None) -> Settings:
     if config_path is None:
         config_path = find_config()
@@ -147,7 +197,6 @@ def load_settings(config_path: Path | None = None) -> Settings:
         user_cfg = yaml.safe_load(f) or {}
 
     cfg = _merge(DEFAULT_CONFIG, user_cfg)
-
     base_dir = config_path.resolve().parent
 
     db_path = _resolve(base_dir, cfg["db_path"])
@@ -166,10 +215,6 @@ def load_settings(config_path: Path | None = None) -> Settings:
     prev_raw = qwen_raw.get("preview") or {}
     full_raw = qwen_raw.get("fullsize") or {}
 
-    def _size(raw, default):
-        v = raw if raw else default
-        return (int(v[0]), int(v[1]))
-
     settings = Settings(
         base_dir=base_dir,
         db_path=db_path,
@@ -182,18 +227,11 @@ def load_settings(config_path: Path | None = None) -> Settings:
             default_cfg=float(qwen_raw.get("default_cfg", 2.5)),
             cfg_green=tuple(qwen_raw.get("cfg_green", [2.0, 3.0])),
             cfg_orange=tuple(qwen_raw.get("cfg_orange", [1.5, 4.0])),
-            preview=QwenSizeConfig(
-                steps=int(prev_raw.get("steps", 20)),
-                size=_size(prev_raw.get("size"), (768, 768)),
-            ),
-            fullsize=QwenSizeConfig(
-                steps=int(full_raw.get("steps", 40)),
-                size=_size(full_raw.get("size"), (1280, 1280)),
-            ),
+            preview=_parse_size_cfg(prev_raw, default_steps=20, default_count=3),
+            fullsize=_parse_size_cfg(full_raw, default_steps=40, default_count=1),
         ),
     )
 
-    # создаём все рабочие папки
     db_path.parent.mkdir(parents=True, exist_ok=True)
     for d in (paths.previews_dir, paths.fullsize_dir, paths.incoming_dir,
               paths.deleted_dir, paths.exports_dir):
@@ -217,5 +255,4 @@ def reset_settings_cache() -> None:
     _SETTINGS = None
 
 
-# на случай запуска из другого места
 os.environ.setdefault("QIQI_CONFIG", str(Path.cwd() / CONFIG_NAME))

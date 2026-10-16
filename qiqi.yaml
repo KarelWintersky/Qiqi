@@ -14,16 +14,24 @@ server:
 
 qwen:
   default_cfg: 2.5
-  cfg_green: [1.0, 3.0]
-  cfg_orange: [0.5, 4.0]
+  cfg_green: [2.0, 3.0]
+  cfg_orange: [1.5, 4.0]
 
   # Параметры генерации превью.
   preview:
-    count: 3
     steps: 20
-    size: [768, 768]
+    count: 3
+    sizes:
+      square: [320, 320]
+      wide:   [1472, 1104]
+      tall:   [1104, 1472]
+    default_size: square
 
   # Параметры генерации фуллсайза.
   fullsize:
     steps: 40
-    size: [1280, 1280]
+    sizes:
+      square: [1280, 1280]
+      wide:   [1472, 1104]
+      tall:   [1104, 1472]
+    default_size: square

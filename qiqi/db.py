@@ -399,3 +399,536 @@ class Database:
             payload["group_id"] = group_id
             created.append(self.create_prompt(payload))
         return created
+
+    # ---------- jobs / files helpers ----------
+
+    def _recalc_job_status(self, conn, job_id: int) -> str:
+        """Пересчитывает статус партии по статусам её файлов. Возвращает новый статус."""
+        rows = conn.execute(
+            "SELECT status FROM files WHERE job_id = ?", (job_id,)
+        ).fetchall()
+        statuses = [r["status"] for r in rows]
+        if not statuses:
+            new_status = "error"
+        elif all(s == "done" for s in statuses):
+            new_status = "done"
+        elif all(s == "error" for s in statuses):
+            new_status = "error"
+        elif any(s in ("pending", "running") for s in statuses):
+            new_status = "running" if any(s == "running" for s in statuses) else "pending"
+        else:
+            # смесь done/error — частичный успех
+            new_status = "partial"
+
+        now = now_iso()
+        finished = new if new_status in ("done", "error", "partial") else None
+        if finished:
+            conn.execute(
+                "UPDATE jobs SET status = ?, finished_at = ? WHERE id = ?",
+                (new_status, now, job_id),
+            )
+        else:
+            conn.execute(
+                "UPDATE jobs SET status = ? WHERE id = ?",
+                (new_status, job_id),
+            )
+        return new_status
+
+    def _relativize_path(self, kind: str, path: str) -> str:
+        """Приводим путь к относительному от previews_dir/fullsize_dir."""
+        settings = _get_settings_singleton()
+        base = settings.previews_dir if kind == "preview" else settings.fullsize_dir
+        p = Path(path)
+        if p.is_absolute():
+            try:
+                p = p.relative_to(base)
+            except ValueError:
+                # воркер положил файл не туда — оставим как есть
+                pass
+        return str(p)
+
+    # Создание задач
+
+    def create_preview_job(
+        self,
+        prompt_id: int,
+        count: int,
+        size_name: str | None = None,
+    ) -> dict[str, Any]:
+        """Создаёт партию превью (count файлов, все pending)."""
+        prompt = self.get_prompt(prompt_id)
+        if not prompt:
+            raise ValueError("prompt not found")
+
+        settings = _get_settings_singleton()
+        cfg_q = settings.qwen.preview
+
+        # фиксированный seed — одна штука
+        if prompt["seed_mode"] == "fixed" and prompt["seed"] is not None:
+            count = 1
+            seed_mode = "fixed"
+            seed = int(prompt["seed"])
+        else:
+            seed_mode = "random"
+            seed = None
+
+        try:
+            size_w, size_h = cfg_q.resolve_size(size_name)
+            resolved_size_name = size_name or cfg_q.default_size
+        except KeyError as e:
+            raise ValueError(str(e))
+
+        params = {
+            "kind": "preview",
+            "cfg": float(prompt["cfg"]),
+            "steps": int(cfg_q.steps),
+            "size": [size_w, size_h],
+            "size_name": resolved_size_name,
+            "no_negative": bool(prompt["no_negative"]),
+        }
+
+        ts = now_iso()
+        with self.connect() as conn:
+            cur = conn.execute(
+                """
+                INSERT INTO jobs(
+                    prompt_id, kind, status, count, seed_mode, seed,
+                    parent_file_id, params_json, requested_at
+                ) VALUES(?, 'preview', 'pending', ?, ?, ?, NULL, ?, ?)
+                """,
+                (prompt_id, count, seed_mode, seed, _json_dumps(params), ts),
+            )
+            job_id = cur.lastrowid
+
+            file_ids: list[int] = []
+            for _ in range(count):
+                fcur = conn.execute(
+                    """
+                    INSERT INTO files(
+                        job_id, prompt_id, kind, status,
+                        steps, cfg, size_w, size_h, no_negative,
+                        created_at, updated_at
+                    ) VALUES(?, ?, 'preview', 'pending', ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        job_id, prompt_id, int(cfg_q.steps), float(prompt["cfg"]),
+                        size_w, size_h, 1 if prompt["no_negative"] else 0,
+                        ts, ts,
+                    ),
+                )
+                file_ids.append(fcur.lastrowid)
+
+            row = conn.execute(
+                "SELECT * FROM jobs WHERE id = ?", (job_id,)
+            ).fetchone()
+            job = dict(row)
+            job["file_ids"] = file_ids
+            return job
+
+    def create_fullsize_job(
+        self,
+        parent_file_id: int,
+        size_name: str | None = None,
+    ) -> dict[str, Any]:
+        """Создаёт fullsize по конкретному превью (наследует seed)."""
+        parent = self.get_file(parent_file_id)
+        if not parent:
+            raise ValueError("parent file not found")
+        if parent["kind"] != "preview":
+            raise ValueError("parent file must be a preview")
+        if parent["status"] != "done":
+            raise ValueError("parent preview is not ready")
+
+        prompt = self.get_prompt(parent["prompt_id"])
+        if not prompt:
+            raise ValueError("prompt not found")
+
+        settings = _get_settings_singleton()
+        cfg_q = settings.qwen.fullsize
+
+        try:
+            size_w, size_h = cfg_q.resolve_size(size_name)
+            resolved_size_name = size_name or cfg_q.default_size
+        except KeyError as e:
+            raise ValueError(str(e))
+
+        params = {
+            "kind": "fullsize",
+            "cfg": float(parent["cfg"] if parent["cfg"] is not None else prompt["cfg"]),
+            "steps": int(cfg_q.steps),
+            "size": [size_w, size_h],
+            "size_name": resolved_size_name,
+            "no_negative": bool(parent["no_negative"]),
+            "parent_seed": parent["seed"],
+        }
+
+        ts = now_iso()
+        with self.connect() as conn:
+            cur = conn.execute(
+                """
+                INSERT INTO jobs(
+                    prompt_id, kind, status, count, seed_mode, seed,
+                    parent_file_id, params_json, requested_at
+                ) VALUES(?, 'fullsize', 'pending', 1, 'inherit', ?, ?, ?, ?)
+                """,
+                (prompt["id"], parent["seed"], parent_file_id,
+                 _json_dumps(params), ts),
+            )
+            job_id = cur.lastrowid
+
+            fcur = conn.execute(
+                """
+                INSERT INTO files(
+                    job_id, prompt_id, kind, status,
+                    seed, steps, cfg, size_w, size_h, no_negative,
+                    parent_file_id, created_at, updated_at
+                ) VALUES(?, ?, 'fullsize', 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    job_id, prompt["id"], parent["seed"],
+                    int(cfg_q.steps), float(params["cfg"]),
+                    size_w, size_h, 1 if params["no_negative"] else 0,
+                    parent_file_id, ts, ts,
+                ),
+            )
+            file_id = fcur.lastrowid
+
+            row = conn.execute(
+                "SELECT * FROM jobs WHERE id = ?", (job_id,)
+            ).fetchone()
+            job = dict(row)
+            job["file_ids"] = [file_id]
+            return job
+
+    def create_preview_jobs_for_group(
+        self,
+        group_id: int,
+        count: int,
+        size_name: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Создаёт партию превью для каждого промпта группы."""
+        prompts = self.list_prompts(group_id=group_id)
+        jobs = []
+        for p in prompts:
+            try:
+                jobs.append(self.create_preview_job(p["id"], count, size_name))
+            except ValueError:
+                continue
+        return jobs
+
+    # Получение и обработка
+
+    def list_jobs(
+        self,
+        status: str | None = None,
+        prompt_id: int | None = None,
+        group_id: int | None = None,
+        kind: str | None = None,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        where: list[str] = []
+        args: list[Any] = []
+        if status:
+            where.append("j.status = ?")
+            args.append(status)
+        if prompt_id is not None:
+            where.append("j.prompt_id = ?")
+            args.append(prompt_id)
+        if kind:
+            where.append("j.kind = ?")
+            args.append(kind)
+        if group_id is not None:
+            where.append("p.group_id = ?")
+            args.append(group_id)
+
+        sql = """
+            SELECT j.*,
+                   p.title AS prompt_title,
+                   p.group_id AS group_id,
+                   (SELECT COUNT(*) FROM files f WHERE f.job_id = j.id)
+                       AS files_total,
+                   (SELECT COUNT(*) FROM files f WHERE f.job_id = j.id AND f.status='done')
+                       AS files_done
+            FROM jobs j
+            JOIN prompts p ON p.id = j.prompt_id
+        """
+        if where:
+            sql += " WHERE " + " AND ".join(where)
+        sql += " ORDER BY j.id DESC LIMIT ?"
+        args.append(int(limit))
+
+        with self.connect() as conn:
+            rows = conn.execute(sql, args).fetchall()
+            return [dict(r) for r in rows]
+
+    def get_job(self, job_id: int) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM jobs WHERE id = ?", (job_id,)
+            ).fetchone()
+            return dict(row) if row else None
+
+    def get_job_with_files(self, job_id: int) -> dict[str, Any] | None:
+        job = self.get_job(job_id)
+        if not job:
+            return None
+        job["files"] = self.list_files(job_id=job_id)
+        return job
+
+    def claim_next_job(self) -> dict[str, Any] | None:
+        """Возвращает самую старую pending-партию и переводит её в running."""
+        ts = now_iso()
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM jobs WHERE status = 'pending' ORDER BY id ASC LIMIT 1"
+            ).fetchone()
+            if not row:
+                return None
+            job_id = row["id"]
+            conn.execute(
+                "UPDATE jobs SET status='running', started_at=? WHERE id=?",
+                (ts, job_id),
+            )
+            conn.execute(
+                "UPDATE files SET status='running', updated_at=? "
+                "WHERE job_id=? AND status='pending'",
+                (ts, job_id),
+            )
+            fresh = conn.execute(
+                "SELECT * FROM jobs WHERE id = ?", (job_id,)
+            ).fetchone()
+            job = dict(fresh)
+            files = conn.execute(
+                "SELECT * FROM files WHERE job_id = ? ORDER BY id ASC", (job_id,)
+            ).fetchall()
+            job["files"] = [dict(f) for f in files]
+            return job
+
+    def apply_job_result(
+        self,
+        job_id: int,
+        file_id: int,
+        status: str,
+        path: str | None = None,
+        meta_path: str | None = None,
+        seed: int | None = None,
+        steps: int | None = None,
+        cfg: float | None = None,
+        error: str | None = None,
+    ) -> dict[str, Any] | None:
+        """Воркер сообщает результат по одному файлу."""
+        if status not in ("done", "error"):
+            raise ValueError("status must be 'done' or 'error'")
+
+        ts = now_iso()
+        with self.connect() as conn:
+            frow = conn.execute(
+                "SELECT * FROM files WHERE id = ? AND job_id = ?",
+                (file_id, job_id),
+            ).fetchone()
+            if not frow:
+                raise ValueError("file not found in this job")
+
+            kind = frow["kind"]
+            rel_path = self._relativize_path(kind, path) if path else None
+
+            conn.execute(
+                """
+                UPDATE files SET
+                    status = ?, path = COALESCE(?, path),
+                    meta_path = COALESCE(?, meta_path),
+                    seed = COALESCE(?, seed),
+                    steps = COALESCE(?, steps),
+                    cfg = COALESCE(?, cfg),
+                    error = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (status, rel_path, meta_path, seed, steps, cfg, error, ts, file_id),
+            )
+            self._recalc_job_status(conn, job_id)
+            fresh = conn.execute(
+                "SELECT * FROM jobs WHERE id = ?", (job_id,)
+            ).fetchone()
+            return dict(fresh)
+
+    def cancel_job(self, job_id: int) -> bool:
+        ts = now_iso()
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT status FROM jobs WHERE id = ?", (job_id,)
+            ).fetchone()
+            if not row:
+                return False
+            if row["status"] != "pending":
+                return False
+
+            conn.execute(
+                "UPDATE files SET status='error', error='cancelled', updated_at=? "
+                "WHERE job_id=? AND status='pending'",
+                (ts, job_id),
+            )
+            conn.execute(
+                "UPDATE jobs SET status='error', error='cancelled', "
+                "finished_at=? WHERE id=?",
+                (ts, job_id),
+            )
+            return True
+
+    # CRUD файлов
+
+    def list_files(
+        self,
+        prompt_id: int | None = None,
+        job_id: int | None = None,
+        kind: str | None = None,
+        parent_file_id: int | None = None,
+        include_deleted: bool = False,
+    ) -> list[dict[str, Any]]:
+        where: list[str] = []
+        args: list[Any] = []
+        if not include_deleted:
+            where.append("deleted = 0")
+        if prompt_id is not None:
+            where.append("prompt_id = ?")
+            args.append(prompt_id)
+        if job_id is not None:
+            where.append("job_id = ?")
+            args.append(job_id)
+        if kind:
+            where.append("kind = ?")
+            args.append(kind)
+        if parent_file_id is not None:
+            where.append("parent_file_id = ?")
+            args.append(parent_file_id)
+
+        sql = "SELECT * FROM files"
+        if where:
+            sql += " WHERE " + " AND ".join(where)
+        sql += " ORDER BY id DESC"
+
+        with self.connect() as conn:
+            rows = conn.execute(sql, args).fetchall()
+            return [dict(r) for r in rows]
+
+    def get_file(self, file_id: int) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM files WHERE id = ?", (file_id,)
+            ).fetchone()
+            return dict(row) if row else None
+
+    def update_file(
+        self,
+        file_id: int,
+        rating: int | None = None,
+        favorite: bool | None = None,
+    ) -> dict[str, Any] | None:
+        sets: list[str] = []
+        args: list[Any] = []
+        if rating is not None:
+            sets.append("rating = ?")
+            args.append(int(rating))
+        if favorite is not None:
+            sets.append("favorite = ?")
+            args.append(1 if favorite else 0)
+        if not sets:
+            return self.get_file(file_id)
+        sets.append("updated_at = ?")
+        args.append(now_iso())
+        args.append(file_id)
+        with self.connect() as conn:
+            conn.execute(
+                f"UPDATE files SET {', '.join(sets)} WHERE id = ?", args
+            )
+            row = conn.execute(
+                "SELECT * FROM files WHERE id = ?", (file_id,)
+            ).fetchone()
+            return dict(row) if row else None
+
+    def mark_file_deleted(self, file_id: int) -> dict[str, Any] | None:
+        """Помечает файл удалённым (deleted=1). Рекурсивно — и его fullsize."""
+        ts = now_iso()
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM files WHERE id = ?", (file_id,)
+            ).fetchone()
+            if not row:
+                return None
+            conn.execute(
+                "UPDATE files SET deleted=1, updated_at=? WHERE id=?",
+                (ts, file_id),
+            )
+            # дочерние fullsize
+            children = conn.execute(
+                "SELECT id FROM files WHERE parent_file_id = ? AND deleted = 0",
+                (file_id,),
+            ).fetchall()
+            for c in children:
+                conn.execute(
+                    "UPDATE files SET deleted=1, updated_at=? WHERE id=?",
+                    (ts, c["id"]),
+                )
+            fresh = conn.execute(
+                "SELECT * FROM files WHERE id = ?", (file_id,)
+            ).fetchone()
+            return dict(fresh)
+
+    def best_preview_for_prompt(self, prompt_id: int) -> dict[str, Any] | None:
+        """Превью с максимальной оценкой; при равенстве — самое старое (min id)."""
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT * FROM files
+                WHERE prompt_id = ? AND kind = 'preview'
+                  AND status = 'done' AND deleted = 0
+                ORDER BY rating DESC, id ASC
+                LIMIT 1
+                """,
+                (prompt_id,),
+            ).fetchone()
+            return dict(row) if row else None
+
+    # Импорт-хелпер в конце db.py
+
+    def _json_dumps(obj) -> str:
+        import json
+        return json.dumps(obj, ensure_ascii=False, separators=(",", ":"))
+
+    # Ленивый доступ к Settings, чтобы не было циклического импорта.
+    _SETTINGS_GETTER = None
+
+    def set_settings_getter(fn):
+        global _SETTINGS_GETTER
+        _SETTINGS_GETTER = fn
+
+    def _get_settings_singleton():
+        if _SETTINGS_GETTER is None:
+            raise RuntimeError("settings getter not configured")
+        return _SETTINGS_GETTER()
+
+# ---------- helpers для доступа к настройкам из db ----------
+
+import json as _json
+
+
+def _json_dumps(obj) -> str:
+    return _json.dumps(obj, ensure_ascii=False, separators=(",", ":"))
+
+
+# Ленивый доступ к Settings, чтобы не было циклического импорта
+# между db.py и config.py.
+_SETTINGS_GETTER = None
+
+
+def set_settings_getter(fn) -> None:
+    global _SETTINGS_GETTER
+    _SETTINGS_GETTER = fn
+
+
+def _get_settings_singleton():
+    if _SETTINGS_GETTER is None:
+        raise RuntimeError("settings getter not configured; "
+                           "call qiqi.db.set_settings_getter() at import time")
+    return _SETTINGS_GETTER()
+
+
