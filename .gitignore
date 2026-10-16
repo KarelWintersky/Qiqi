@@ -1,0 +1,9 @@
+.idea
+.venv/
+__pycache__/
+*.pyc
+prompts.sqlite
+previews/
+exports/
+qiqi.yaml
+!qiqi.example.yaml

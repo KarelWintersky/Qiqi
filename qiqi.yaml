@@ -1,0 +1,12 @@
+db_path: prompts.sqlite
+previews_dir: previews
+exports_dir: exports
+
+server:
+  host: 127.0.0.1
+  port: 8765
+
+qwen:
+  default_cfg: 2.5
+  cfg_green: [2.0, 3.0]
+  cfg_orange: [1.5, 4.0]

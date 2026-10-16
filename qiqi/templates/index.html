@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<title>Qiqi — каталог промптов</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header>
+  <h1>Qiqi</h1>
+  <div class="meta" id="meta"></div>
+</header>
+
+<main>
+  <aside id="groupsPane">
+    <div class="pane-head">
+      <h2>Группы</h2>
+      <button id="newGroupBtn" title="Новая группа">+</button>
+    </div>
+    <ul id="groupsList"></ul>
+  </aside>
+
+  <section id="promptsPane">
+    <div class="pane-head">
+      <h2 id="currentGroupName">—</h2>
+      <button id="newPromptBtn" title="Новый промпт" disabled>+ промпт</button>
+    </div>
+    <div id="promptsList" class="prompts"></div>
+  </section>
+</main>
+
+<!-- модалка группы -->
+<div class="modal hidden" id="groupModal">
+  <div class="modal-box">
+    <h3 id="groupModalTitle">Группа</h3>
+    <label>Название<input type="text" id="groupName"></label>
+    <label>Комментарий<textarea id="groupComment"></textarea></label>
+    <div class="modal-actions">
+      <button class="danger" id="groupDeleteBtn" style="display:none">Удалить</button>
+      <span class="spacer"></span>
+      <button class="ghost" data-close>Отмена</button>
+      <button id="groupSaveBtn">Сохранить</button>
+    </div>
+  </div>
+</div>
+
+<!-- модалка промпта -->
+<div class="modal hidden" id="promptModal">
+  <div class="modal-box wide">
+    <h3 id="promptModalTitle">Промпт</h3>
+
+    <label>Название<input type="text" id="pTitle"></label>
+    <label>Положительный<textarea id="pPositive" rows="6"></textarea></label>
+    <label>Негативный<textarea id="pNegative" rows="6"></textarea></label>
+
+    <div class="row">
+      <label>CFG (true_cfg_scale)
+        <input type="number" id="pCfg" step="0.1" min="0" max="20">
+        <span class="cfg-badge" id="pCfgBadge">—</span>
+      </label>
+      <label>Рейтинг (0–12)
+        <input type="number" id="pRating" min="0" max="12" step="1">
+      </label>
+      <label class="checkbox">
+        <input type="checkbox" id="pFavorite"> любимый
+      </label>
+    </div>
+
+    <label>Комментарий<textarea id="pComment" rows="3"></textarea></label>
+
+    <div class="modal-actions">
+      <button class="danger" id="promptDeleteBtn" style="display:none">Удалить</button>
+      <span class="spacer"></span>
+      <button class="ghost" data-close>Отмена</button>
+      <button id="promptSaveBtn">Сохранить</button>
+    </div>
+  </div>
+</div>
+
+<script>
+window.QIQI = {
+  cfgGreen: {{ cfg_green | tojson }},
+  cfgOrange: {{ cfg_orange | tojson }},
+  defaultCfg: {{ default_cfg | tojson }},
+};
+</script>
+<script src="/static/app.js"></script>
+</body>
+</html>
