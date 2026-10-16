@@ -4,12 +4,12 @@ from __future__ import annotations
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from .config import get_settings
 from .db import Database
-from .models import GroupIn, GroupPatch, PromptIn, PromptPatch
+from .models import GroupIn, GroupPatch, PromptIn, PromptPatch, SettingsPatch
 
 BASE_DIR = Path(__file__).resolve().parent
 
@@ -101,7 +101,7 @@ def api_update_group(group_id: int, payload: GroupPatch):
 def api_delete_group(group_id: int):
     if not db.delete_group(group_id):
         raise HTTPException(404, "group not found")
-    return JSONResponse(status_code=204, content=None)
+    return Response(status_code=204, content=None)
 
 
 # ---------- prompts ----------
@@ -150,4 +150,4 @@ def api_update_prompt(prompt_id: int, payload: PromptPatch):
 def api_delete_prompt(prompt_id: int):
     if not db.delete_prompt(prompt_id):
         raise HTTPException(404, "prompt not found")
-    return JSONResponse(status_code=204, content=None)
+    return Response(status_code=204, content=None)

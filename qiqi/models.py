@@ -6,6 +6,8 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 
+# ---------- groups ----------
+
 class GroupIn(BaseModel):
     name: str = Field(min_length=1, max_length=200)
     comment: str = ""
@@ -15,6 +17,8 @@ class GroupPatch(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=200)
     comment: str | None = None
 
+
+# ---------- prompts ----------
 
 class PromptIn(BaseModel):
     group_id: int
@@ -26,6 +30,8 @@ class PromptIn(BaseModel):
     comment: str = ""
     rating: int = Field(default=0, ge=0, le=12)
     favorite: bool = False
+    seed_mode: Literal["random", "fixed"] = "random"
+    seed: int | None = None
 
 
 class PromptPatch(BaseModel):
@@ -38,11 +44,41 @@ class PromptPatch(BaseModel):
     comment: str | None = None
     rating: int | None = Field(default=None, ge=0, le=12)
     favorite: bool | None = None
+    seed_mode: Literal["random", "fixed"] | None = None
+    seed: int | None = None
 
-class JobOrderIn(BaseModel):
-    size: Literal["preview", "fullsize"]
+
+# ---------- settings ----------
 
 class SettingsPatch(BaseModel):
     theme: Literal["dark", "light"] | None = None
     last_group_id: int | None = None
+
+
+# ---------- jobs ----------
+
+class OrderIn(BaseModel):
+    """Заказ партии превью/фуллсайза."""
+    kind: Literal["preview", "fullsize"]
+    count: int | None = Field(default=None, ge=1, le=64)
+    parent_file_id: int | None = None  # для fullsize
+
+
+class JobResultIn(BaseModel):
+    """Воркер сообщает о результате одной задачи (одного файла)."""
+    file_id: int
+    status: Literal["done", "error"]
+    path: str | None = None
+    meta_path: str | None = None
+    seed: int | None = None
+    steps: int | None = None
+    cfg: float | None = None
+    error: str | None = None
+
+
+# ---------- files ----------
+
+class FilePatch(BaseModel):
+    rating: int | None = Field(default=None, ge=0, le=12)
+    favorite: bool | None = None
 

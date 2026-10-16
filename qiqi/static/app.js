@@ -57,10 +57,16 @@ async function loadGroups() {
     if (g.id === state.currentGroupId) li.classList.add('active');
     li.innerHTML = `
       <span class="name">${escapeHtml(g.name)}</span>
-      <span class="cnt">${g.prompts_count}</span>
+      <span class="row-right">
+        <span class="cnt">${g.prompts_count}</span>
+        <button class="row-menu" title="Редактировать группу">✎</button>
+      </span>
     `;
     li.onclick = () => selectGroup(g.id);
-    li.ondblclick = (e) => { e.stopPropagation(); openGroupModal(g.id); };
+    li.querySelector('.row-menu').onclick = (e) => {
+      e.stopPropagation();
+      openGroupModal(g.id);
+    };
     ul.appendChild(li);
   }
 }
@@ -386,6 +392,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       if (e.target === m) m.classList.add('hidden');
     });
   });
+
 });
 
 document.addEventListener('keydown', (e) => {

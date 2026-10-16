@@ -30,49 +30,70 @@ CREATE TABLE IF NOT EXISTS prompts (
     comment TEXT NOT NULL DEFAULT '',
     rating INTEGER NOT NULL DEFAULT 0 CHECK(rating BETWEEN 0 AND 12),
     favorite INTEGER NOT NULL DEFAULT 0,
+    seed_mode TEXT NOT NULL DEFAULT 'random'
+        CHECK(seed_mode IN ('random','fixed')),
+    seed INTEGER,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_prompts_group ON prompts(group_id);
 
-CREATE TABLE IF NOT EXISTS files (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    prompt_id INTEGER NOT NULL REFERENCES prompts(id) ON DELETE CASCADE,
-    size TEXT NOT NULL CHECK(size IN ('preview','fullsize')),
-    path TEXT NOT NULL,
-    meta_path TEXT,
-    seed INTEGER,
-    steps INTEGER,
-    cfg REAL,
-    status TEXT NOT NULL DEFAULT 'done'
-        CHECK(status IN ('pending','running','done','error')),
-    error TEXT,
-    created_at TEXT NOT NULL
-);
-
-CREATE INDEX IF NOT EXISTS idx_files_prompt ON files(prompt_id);
-
 CREATE TABLE IF NOT EXISTS jobs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     prompt_id INTEGER NOT NULL REFERENCES prompts(id) ON DELETE CASCADE,
-    size TEXT NOT NULL CHECK(size IN ('preview','fullsize')),
+    kind TEXT NOT NULL CHECK(kind IN ('preview','fullsize')),
     status TEXT NOT NULL DEFAULT 'pending'
-        CHECK(status IN ('pending','running','done','error')),
+        CHECK(status IN ('pending','running','done','partial','error')),
+    count INTEGER NOT NULL DEFAULT 1,
+    seed_mode TEXT NOT NULL DEFAULT 'random'
+        CHECK(seed_mode IN ('random','fixed','inherit')),
+    seed INTEGER,
+    parent_file_id INTEGER,
+    params_json TEXT NOT NULL DEFAULT '{}',
     requested_at TEXT NOT NULL,
     started_at TEXT,
     finished_at TEXT,
     error TEXT
 );
 
+CREATE INDEX IF NOT EXISTS idx_jobs_prompt ON jobs(prompt_id);
 CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status);
+
+CREATE TABLE IF NOT EXISTS files (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_id INTEGER REFERENCES jobs(id) ON DELETE SET NULL,
+    prompt_id INTEGER NOT NULL REFERENCES prompts(id) ON DELETE CASCADE,
+    kind TEXT NOT NULL CHECK(kind IN ('preview','fullsize')),
+    status TEXT NOT NULL DEFAULT 'pending'
+        CHECK(status IN ('pending','running','done','error')),
+    path TEXT,
+    meta_path TEXT,
+    seed INTEGER,
+    steps INTEGER,
+    cfg REAL,
+    size_w INTEGER,
+    size_h INTEGER,
+    no_negative INTEGER NOT NULL DEFAULT 0,
+    rating INTEGER NOT NULL DEFAULT 0 CHECK(rating BETWEEN 0 AND 12),
+    favorite INTEGER NOT NULL DEFAULT 0,
+    parent_file_id INTEGER REFERENCES files(id) ON DELETE SET NULL,
+    deleted INTEGER NOT NULL DEFAULT 0,
+    error TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_files_prompt ON files(prompt_id);
+CREATE INDEX IF NOT EXISTS idx_files_job ON files(job_id);
+CREATE INDEX IF NOT EXISTS idx_files_parent ON files(parent_file_id);
+CREATE INDEX IF NOT EXISTS idx_files_deleted ON files(deleted);
 
 CREATE TABLE IF NOT EXISTS settings (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
-
 """
 
 
@@ -85,7 +106,6 @@ class Database:
         self.path = path
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._init_schema()
-        self._migrate()
 
     @contextmanager
     def connect(self) -> Iterator[sqlite3.Connection]:
@@ -105,14 +125,39 @@ class Database:
         with self.connect() as conn:
             conn.executescript(SCHEMA)
 
-    def _migrate(self) -> None:
-        """Простые миграции: добавляем колонки, если их нет."""
+    # ---------- settings ----------
+
+    def get_setting(self, key: str, default: str | None = None) -> str | None:
         with self.connect() as conn:
-            cols = {r["name"] for r in conn.execute("PRAGMA table_info(prompts)")}
-            if "no_negative" not in cols:
-                conn.execute(
-                    "ALTER TABLE prompts ADD COLUMN no_negative INTEGER NOT NULL DEFAULT 0"
-                )
+            row = conn.execute(
+                "SELECT value FROM settings WHERE key = ?", (key,)
+            ).fetchone()
+            return row["value"] if row else default
+
+    def get_settings(self, keys: list[str] | None = None) -> dict[str, str]:
+        with self.connect() as conn:
+            if keys:
+                placeholders = ",".join("?" * len(keys))
+                rows = conn.execute(
+                    f"SELECT key, value FROM settings WHERE key IN ({placeholders})",
+                    keys,
+                ).fetchall()
+            else:
+                rows = conn.execute("SELECT key, value FROM settings").fetchall()
+            return {r["key"]: r["value"] for r in rows}
+
+    def set_setting(self, key: str, value: str) -> None:
+        ts = now_iso()
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO settings(key, value, updated_at)
+                VALUES(?, ?, ?)
+                ON CONFLICT(key) DO UPDATE SET value = excluded.value,
+                                               updated_at = excluded.updated_at
+                """,
+                (key, str(value), ts),
+            )
 
     # ---------- groups ----------
 
@@ -191,15 +236,17 @@ class Database:
         "comment",
         "rating",
         "favorite",
+        "seed_mode",
+        "seed",
     )
 
     def list_prompts(
-            self,
-            group_id: int | None = None,
-            favorites_only: bool = False,
-            min_rating: int | None = None,
-            search: str | None = None,
-            sort: str = "favorite",
+        self,
+        group_id: int | None = None,
+        favorites_only: bool = False,
+        min_rating: int | None = None,
+        search: str | None = None,
+        sort: str = "favorite",
     ) -> list[dict[str, Any]]:
         where: list[str] = []
         args: list[Any] = []
@@ -212,16 +259,18 @@ class Database:
             where.append("rating >= ?")
             args.append(min_rating)
         if search:
-            where.append("(title LIKE ? OR positive LIKE ? OR negative LIKE ? OR comment LIKE ?)")
+            where.append(
+                "(title LIKE ? OR positive LIKE ? OR negative LIKE ? OR comment LIKE ?)"
+            )
             like = f"%{search}%"
             args.extend([like, like, like, like])
 
         order_map = {
-            "favorite": "favorite DESC, rating DESC, created_at DESC",
-            "title": "title COLLATE NOCASE ASC",
+            "favorite":    "favorite DESC, rating DESC, created_at DESC",
+            "title":       "title COLLATE NOCASE ASC",
             "created_new": "created_at DESC",
             "created_old": "created_at ASC",
-            "cfg": "cfg ASC",
+            "cfg":         "cfg ASC",
         }
         order_by = order_map.get(sort, order_map["favorite"])
 
@@ -234,8 +283,6 @@ class Database:
             rows = conn.execute(sql, args).fetchall()
             return [dict(r) for r in rows]
 
-
-
     def get_prompt(self, prompt_id: int) -> dict[str, Any] | None:
         with self.connect() as conn:
             row = conn.execute(
@@ -247,35 +294,32 @@ class Database:
         ts = now_iso()
         no_negative = 1 if data.get("no_negative") else 0
         cfg = 1.0 if no_negative else float(data.get("cfg", 2.5))
-        payload = {
-            "group_id": data["group_id"],
-            "title": data.get("title", ""),
-            "positive": data.get("positive", ""),
-            "negative": data.get("negative", ""),
-            "no_negative": no_negative,
-            "cfg": cfg,
-            "comment": data.get("comment", ""),
-            "rating": int(data.get("rating", 0)),
-            "favorite": 1 if data.get("favorite") else 0,
-        }
+        seed_mode = data.get("seed_mode", "random")
+        seed = data.get("seed")
+        if seed_mode != "fixed":
+            seed = None
+
         with self.connect() as conn:
             cur = conn.execute(
                 """
                 INSERT INTO prompts(
                     group_id, title, positive, negative, no_negative, cfg,
-                    comment, rating, favorite, created_at, updated_at
-                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    comment, rating, favorite, seed_mode, seed,
+                    created_at, updated_at
+                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
-                    payload["group_id"],
-                    payload["title"],
-                    payload["positive"],
-                    payload["negative"],
-                    payload["no_negative"],
-                    payload["cfg"],
-                    payload["comment"],
-                    payload["rating"],
-                    payload["favorite"],
+                    data["group_id"],
+                    data.get("title", ""),
+                    data.get("positive", ""),
+                    data.get("negative", ""),
+                    no_negative,
+                    cfg,
+                    data.get("comment", ""),
+                    int(data.get("rating", 0)),
+                    1 if data.get("favorite") else 0,
+                    seed_mode,
+                    int(seed) if seed is not None else None,
                     ts,
                     ts,
                 ),
@@ -287,7 +331,7 @@ class Database:
             return dict(row)
 
     def update_prompt(
-            self, prompt_id: int, data: dict[str, Any]
+        self, prompt_id: int, data: dict[str, Any]
     ) -> dict[str, Any] | None:
         data = dict(data)
 
@@ -296,6 +340,9 @@ class Database:
             data["no_negative"] = 1
         elif "no_negative" in data and not data["no_negative"]:
             data["no_negative"] = 0
+
+        if "seed_mode" in data and data["seed_mode"] != "fixed":
+            data["seed"] = None
 
         sets: list[str] = []
         args: list[Any] = []
@@ -308,8 +355,15 @@ class Database:
                     value = int(value)
                 elif field in ("favorite", "no_negative"):
                     value = 1 if value else 0
+                elif field == "seed":
+                    value = int(value)
                 sets.append(f"{field} = ?")
                 args.append(value)
+
+        # явное обнуление seed
+        if "seed" in data and data["seed"] is None:
+            sets.append("seed = ?")
+            args.append(None)
 
         if "group_id" in data and data["group_id"] is not None:
             sets.append("group_id = ?")
@@ -345,37 +399,3 @@ class Database:
             payload["group_id"] = group_id
             created.append(self.create_prompt(payload))
         return created
-
-    # ---------- settings ----------
-
-    def get_setting(self, key: str, default: str | None = None) -> str | None:
-        with self.connect() as conn:
-            row = conn.execute(
-                "SELECT value FROM settings WHERE key = ?", (key,)
-            ).fetchone()
-            return row["value"] if row else default
-
-    def get_settings(self, keys: list[str] | None = None) -> dict[str, str]:
-        with self.connect() as conn:
-            if keys:
-                placeholders = ",".join("?" * len(keys))
-                rows = conn.execute(
-                    f"SELECT key, value FROM settings WHERE key IN ({placeholders})",
-                    keys,
-                ).fetchall()
-            else:
-                rows = conn.execute("SELECT key, value FROM settings").fetchall()
-            return {r["key"]: r["value"] for r in rows}
-
-    def set_setting(self, key: str, value: str) -> None:
-        ts = now_iso()
-        with self.connect() as conn:
-            conn.execute(
-                """
-                INSERT INTO settings(key, value, updated_at)
-                VALUES(?, ?, ?)
-                ON CONFLICT(key) DO UPDATE SET value = excluded.value,
-                                               updated_at = excluded.updated_at
-                """,
-                (key, str(value), ts),
-            )
