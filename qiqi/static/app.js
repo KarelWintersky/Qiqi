@@ -23,7 +23,16 @@ const state = {
   editingPromptId: null,
 };
 
-const $ = (id) => document.getElementById(id);
+state.filters = {
+  search: "",
+  favoritesOnly: false,
+  minRating: 0,
+  sort: "favorite",
+};
+
+state.theme = "dark";
+
+const $ = (id) => document.getElementById(id); /* jQuery emulate */
 
 function cfgClass(cfg) {
   const g = window.QIQI.cfgGreen, o = window.QIQI.cfgOrange;
@@ -61,6 +70,9 @@ async function selectGroup(id) {
   const g = state.groups.find(x => x.id === id);
   $('currentGroupName').textContent = g ? g.name : '—';
   $('newPromptBtn').disabled = !id;
+  try {
+    await api.send('PATCH', '/api/settings', { last_group_id: id });
+  } catch (e) { /* не критично */ }
   await loadGroups();
   await loadPrompts();
 }
@@ -71,7 +83,7 @@ async function loadPrompts() {
     $('promptsList').innerHTML = '';
     return;
   }
-  state.prompts = await api.get(`/api/prompts?group_id=${state.currentGroupId}`);
+  state.prompts = await api.get(`/api/prompts?${filtersToQuery()}`);
   renderPrompts();
 }
 
@@ -246,14 +258,73 @@ async function savePrompt() {
   await loadGroups();
 }
 
-
-
 async function deletePrompt() {
   if (!confirm('Удалить промпт?')) return;
   await api.send('DELETE', `/api/prompts/${state.editingPromptId}`);
   $('promptModal').classList.add('hidden');
   await loadPrompts();
   await loadGroups();
+}
+
+// ---------- theme ----------
+
+function applyTheme(theme) {
+  state.theme = theme;
+  document.documentElement.setAttribute("data-theme", theme);
+  $('themeToggle').textContent = theme === "dark" ? "🌙" : "☀️";
+}
+
+async function toggleTheme() {
+  const next = state.theme === "dark" ? "light" : "dark";
+  applyTheme(next);
+  try {
+    await api.send('PATCH', '/api/settings', { theme: next });
+  } catch (e) {
+    console.warn('Не удалось сохранить тему', e);
+  }
+}
+
+// ---------- filters ----------
+
+function filtersToQuery() {
+  const p = new URLSearchParams();
+  if (state.currentGroupId) p.set('group_id', state.currentGroupId);
+  if (state.filters.search) p.set('search', state.filters.search);
+  if (state.filters.favoritesOnly) p.set('favorites_only', 'true');
+  if (state.filters.minRating > 0) p.set('min_rating', state.filters.minRating);
+  p.set('sort', state.filters.sort);
+  return p.toString();
+}
+
+function bindFilters() {
+  let debounce = null;
+  $('fSearch').addEventListener('input', () => {
+    clearTimeout(debounce);
+    debounce = setTimeout(() => {
+      state.filters.search = $('fSearch').value.trim();
+      loadPrompts();
+    }, 200);
+  });
+  $('fFav').addEventListener('change', () => {
+    state.filters.favoritesOnly = $('fFav').checked;
+    loadPrompts();
+  });
+  $('fMinRating').addEventListener('input', () => {
+    state.filters.minRating = parseInt($('fMinRating').value, 10) || 0;
+    loadPrompts();
+  });
+  $('fSort').addEventListener('change', () => {
+    state.filters.sort = $('fSort').value;
+    loadPrompts();
+  });
+  $('fReset').addEventListener('click', () => {
+    state.filters = { search: "", favoritesOnly: false, minRating: 0, sort: "favorite" };
+    $('fSearch').value = "";
+    $('fFav').checked = false;
+    $('fMinRating').value = 0;
+    $('fSort').value = "favorite";
+    loadPrompts();
+  });
 }
 
 // ---------- bindings ----------
@@ -271,8 +342,30 @@ document.addEventListener('DOMContentLoaded', async () => {
     console.warn('Не удалось получить /api/meta, использую значения по умолчанию', e);
   }
 
+  try {
+    const meta = await api.get('/api/meta');
+    window.QIQI = {
+      cfgGreen: meta.cfg_green,
+      cfgOrange: meta.cfg_orange,
+      defaultCfg: meta.default_cfg,
+    };
+  } catch (e) { /* ... */ }
+
+  let settings = { theme: "dark", last_group_id: null };
+  try {
+    settings = await api.get('/api/settings');
+  } catch (e) { console.warn('settings недоступны', e); }
+
+  applyTheme(settings.theme || "dark");
+  bindFilters();
+  $('themeToggle').addEventListener('click', toggleTheme);
+
   renderMeta();
   await loadGroups();
+
+  if (settings.last_group_id && state.groups.some(g => g.id === settings.last_group_id)) {
+    await selectGroup(settings.last_group_id);
+  }
 
   $('newGroupBtn').onclick = () => openGroupModal(null);
   $('groupSaveBtn').onclick = saveGroup;
@@ -300,3 +393,4 @@ document.addEventListener('keydown', (e) => {
   const open = document.querySelector('.modal:not(.hidden)');
   if (open) open.classList.add('hidden');
 });
+

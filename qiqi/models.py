@@ -42,4 +42,7 @@ class PromptPatch(BaseModel):
 class JobOrderIn(BaseModel):
     size: Literal["preview", "fullsize"]
 
-    
+class SettingsPatch(BaseModel):
+    theme: Literal["dark", "light"] | None = None
+    last_group_id: int | None = None
+

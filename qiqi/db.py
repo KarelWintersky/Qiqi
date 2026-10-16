@@ -66,6 +66,13 @@ CREATE TABLE IF NOT EXISTS jobs (
 );
 
 CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status);
+
+CREATE TABLE IF NOT EXISTS settings (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
 """
 
 
@@ -187,11 +194,12 @@ class Database:
     )
 
     def list_prompts(
-        self,
-        group_id: int | None = None,
-        favorites_only: bool = False,
-        min_rating: int | None = None,
-        search: str | None = None,
+            self,
+            group_id: int | None = None,
+            favorites_only: bool = False,
+            min_rating: int | None = None,
+            search: str | None = None,
+            sort: str = "favorite",
     ) -> list[dict[str, Any]]:
         where: list[str] = []
         args: list[Any] = []
@@ -208,14 +216,25 @@ class Database:
             like = f"%{search}%"
             args.extend([like, like, like, like])
 
+        order_map = {
+            "favorite": "favorite DESC, rating DESC, created_at DESC",
+            "title": "title COLLATE NOCASE ASC",
+            "created_new": "created_at DESC",
+            "created_old": "created_at ASC",
+            "cfg": "cfg ASC",
+        }
+        order_by = order_map.get(sort, order_map["favorite"])
+
         sql = "SELECT * FROM prompts"
         if where:
             sql += " WHERE " + " AND ".join(where)
-        sql += " ORDER BY favorite DESC, rating DESC, created_at DESC"
+        sql += " ORDER BY " + order_by
 
         with self.connect() as conn:
             rows = conn.execute(sql, args).fetchall()
             return [dict(r) for r in rows]
+
+
 
     def get_prompt(self, prompt_id: int) -> dict[str, Any] | None:
         with self.connect() as conn:
@@ -326,3 +345,37 @@ class Database:
             payload["group_id"] = group_id
             created.append(self.create_prompt(payload))
         return created
+
+    # ---------- settings ----------
+
+    def get_setting(self, key: str, default: str | None = None) -> str | None:
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT value FROM settings WHERE key = ?", (key,)
+            ).fetchone()
+            return row["value"] if row else default
+
+    def get_settings(self, keys: list[str] | None = None) -> dict[str, str]:
+        with self.connect() as conn:
+            if keys:
+                placeholders = ",".join("?" * len(keys))
+                rows = conn.execute(
+                    f"SELECT key, value FROM settings WHERE key IN ({placeholders})",
+                    keys,
+                ).fetchall()
+            else:
+                rows = conn.execute("SELECT key, value FROM settings").fetchall()
+            return {r["key"]: r["value"] for r in rows}
+
+    def set_setting(self, key: str, value: str) -> None:
+        ts = now_iso()
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO settings(key, value, updated_at)
+                VALUES(?, ?, ?)
+                ON CONFLICT(key) DO UPDATE SET value = excluded.value,
+                                               updated_at = excluded.updated_at
+                """,
+                (key, str(value), ts),
+            )

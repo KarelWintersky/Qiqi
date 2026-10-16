@@ -1,87 +1,109 @@
 <!DOCTYPE html>
 <html lang="ru">
 <head>
-<meta charset="UTF-8">
-<title>Qiqi — каталог промптов</title>
-<link rel="stylesheet" href="/static/style.css">
+    <meta charset="UTF-8">
+    <title>Qiqi — каталог промптов</title>
+    <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
 <header>
-  <h1>Qiqi</h1>
-  <div class="meta" id="meta"></div>
+    <h1>Qiqi</h1>
+    <div class="meta" id="meta"></div>
 </header>
 
-<main>
-  <aside id="groupsPane">
-    <div class="pane-head">
-      <h2>Группы</h2>
-      <button id="newGroupBtn" title="Новая группа">+</button>
-    </div>
-    <ul id="groupsList"></ul>
-  </aside>
+<div id="filtersBar">
+    <input type="text" id="fSearch" placeholder="поиск по названию, промпту, комментарию…">
+    <label class="checkbox"><input type="checkbox" id="fFav"> только избранные</label>
+    <label class="inline">
+        мин. оценка
+        <input type="number" id="fMinRating" min="0" max="12" step="1" value="0" style="width:70px">
+    </label>
+    <label class="inline">
+        сортировка
+        <select id="fSort">
+            <option value="favorite">сначала избранные</option>
+            <option value="title">по названию</option>
+            <option value="created_new">сначала новые</option>
+            <option value="created_old">сначала старые</option>
+            <option value="cfg">по CFG</option>
+        </select>
+    </label>
+    <button class="ghost" id="fReset">сбросить</button>
+    <span class="spacer"></span>
+    <button class="ghost" id="themeToggle" title="Сменить тему">🌙</button>
+</div>
 
-  <section id="promptsPane">
-    <div class="pane-head">
-      <h2 id="currentGroupName">—</h2>
-      <button id="newPromptBtn" title="Новый промпт" disabled>+ промпт</button>
-    </div>
-    <div id="promptsList" class="prompts"></div>
-  </section>
+<main>
+    <aside id="groupsPane">
+        <div class="pane-head">
+            <h2>Группы</h2>
+            <button id="newGroupBtn" title="Новая группа">+</button>
+        </div>
+        <ul id="groupsList"></ul>
+    </aside>
+
+    <section id="promptsPane">
+        <div class="pane-head">
+            <h2 id="currentGroupName">—</h2>
+            <button id="newPromptBtn" title="Новый промпт" disabled>+ промпт</button>
+        </div>
+        <div id="promptsList" class="prompts"></div>
+    </section>
 </main>
 
 <!-- модалка группы -->
 <div class="modal hidden" id="groupModal">
-  <div class="modal-box">
-    <h3 id="groupModalTitle">Группа</h3>
-    <label>Название<input type="text" id="groupName"></label>
-    <label>Комментарий<textarea id="groupComment"></textarea></label>
-    <div class="modal-actions">
-      <button class="danger" id="groupDeleteBtn" style="display:none">Удалить</button>
-      <span class="spacer"></span>
-      <button class="ghost" data-close>Отмена</button>
-      <button id="groupSaveBtn">Сохранить</button>
+    <div class="modal-box">
+        <h3 id="groupModalTitle">Группа</h3>
+        <label>Название<input type="text" id="groupName"></label>
+        <label>Комментарий<textarea id="groupComment"></textarea></label>
+        <div class="modal-actions">
+            <button class="danger" id="groupDeleteBtn" style="display:none">Удалить</button>
+            <span class="spacer"></span>
+            <button class="ghost" data-close>Отмена</button>
+            <button id="groupSaveBtn">Сохранить</button>
+        </div>
     </div>
-  </div>
 </div>
 
 <!-- модалка промпта -->
 <div class="modal hidden" id="promptModal">
-  <div class="modal-box wide">
-    <h3 id="promptModalTitle">Промпт</h3>
+    <div class="modal-box wide">
+        <h3 id="promptModalTitle">Промпт</h3>
 
-    <label>Название<input type="text" id="pTitle"></label>
-    <label>Положительный<textarea id="pPositive" rows="6"></textarea></label>
-    <label>Негативный<textarea id="pNegative" rows="6"></textarea></label>
+        <label>Название<input type="text" id="pTitle"></label>
+        <label>Положительный<textarea id="pPositive" rows="6"></textarea></label>
+        <label>Негативный<textarea id="pNegative" rows="6"></textarea></label>
 
-    <div class="row-cfg">
-      <label class="cfg-label">CFG (true_cfg_scale)</label>
-      <input type="range" id="pCfg" min="0" max="6" step="0.1" value="2.5">
-      <span class="cfg-value" id="pCfgValue">2.5</span>
+        <div class="row-cfg">
+            <label class="cfg-label">CFG (true_cfg_scale)</label>
+            <input type="range" id="pCfg" min="0" max="6" step="0.1" value="2.5">
+            <span class="cfg-value" id="pCfgValue">2.5</span>
+        </div>
+
+        <div class="row-flags">
+            <label class="checkbox">
+                <input type="checkbox" id="pNoNegative"> без негатива (CFG = 1)
+            </label>
+            <label class="checkbox">
+                <input type="checkbox" id="pFavorite"> любимый
+            </label>
+        </div>
+
+        <label>Комментарий<textarea id="pComment" rows="3"></textarea></label>
+
+        <div class="modal-actions">
+            <button class="danger" id="promptDeleteBtn" style="display:none">Удалить</button>
+            <span class="spacer"></span>
+            <button class="ghost" data-close>Отмена</button>
+            <button id="promptSaveBtn">Сохранить</button>
+        </div>
     </div>
-
-    <div class="row-flags">
-      <label class="checkbox">
-        <input type="checkbox" id="pNoNegative"> без негатива (CFG = 1)
-      </label>
-      <label class="checkbox">
-        <input type="checkbox" id="pFavorite"> любимый
-      </label>
-    </div>
-
-    <label>Комментарий<textarea id="pComment" rows="3"></textarea></label>
-
-    <div class="modal-actions">
-      <button class="danger" id="promptDeleteBtn" style="display:none">Удалить</button>
-      <span class="spacer"></span>
-      <button class="ghost" data-close>Отмена</button>
-      <button id="promptSaveBtn">Сохранить</button>
-    </div>
-  </div>
 </div>
 
 <script>
-// Заполняется из /api/meta после загрузки страницы.
-window.QIQI = { cfgGreen: [2.0, 3.0], cfgOrange: [1.5, 4.0], defaultCfg: 2.5 };
+    // Заполняется из /api/meta после загрузки страницы.
+    window.QIQI = { cfgGreen: [2.0, 3.0], cfgOrange: [1.5, 4.0], defaultCfg: 2.5 };
 </script>
 <script src="/static/app.js"></script>
 </body>

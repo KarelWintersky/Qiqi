@@ -46,6 +46,25 @@ def api_meta():
         "exports_dir": str(_settings.exports_dir),
     }
 
+# ---------- settings ----------
+
+@app.get("/api/settings")
+def api_get_settings():
+    s = db.get_settings()
+    # дефолты
+    return {
+        "theme": s.get("theme", "dark"),
+        "last_group_id": int(s["last_group_id"]) if s.get("last_group_id") else None,
+    }
+
+
+@app.patch("/api/settings")
+def api_patch_settings(payload: SettingsPatch):
+    data = payload.model_dump(exclude_none=True)
+    for k, v in data.items():
+        db.set_setting(k, str(v))
+    return api_get_settings()
+
 
 # ---------- groups ----------
 
@@ -93,14 +112,15 @@ def api_list_prompts(
     favorites_only: bool = False,
     min_rating: int | None = None,
     search: str | None = None,
+    sort: str = "favorite",
 ):
     return db.list_prompts(
         group_id=group_id,
         favorites_only=favorites_only,
         min_rating=min_rating,
         search=search,
+        sort=sort,
     )
-
 
 @app.post("/api/prompts", status_code=201)
 def api_create_prompt(payload: PromptIn):
