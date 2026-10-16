@@ -3,17 +3,15 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi import FastAPI, HTTPException
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
-from fastapi.templating import Jinja2Templates
 
 from .config import get_settings
 from .db import Database
 from .models import GroupIn, GroupPatch, PromptIn, PromptPatch
 
 BASE_DIR = Path(__file__).resolve().parent
-templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 
 app = FastAPI(title="Qiqi", version="0.1.0")
 
@@ -29,17 +27,24 @@ app.mount(
 
 # ---------- HTML ----------
 
-@app.get("/", response_class=HTMLResponse)
-def index(request: Request):
-    return templates.TemplateResponse(
-        "index.html",
-        {
-            "request": request,
-            "cfg_green": list(_settings.qwen.cfg_green),
-            "cfg_orange": list(_settings.qwen.cfg_orange),
-            "default_cfg": _settings.qwen.default_cfg,
-        },
-    )
+@app.get("/")
+def index():
+    # Отдаём файл напрямую — без Jinja2, чтобы не ловить баги шаблонизатора.
+    return FileResponse(BASE_DIR / "templates" / "index.html", media_type="text/html")
+
+
+# ---------- meta ----------
+
+@app.get("/api/meta")
+def api_meta():
+    return {
+        "cfg_green": list(_settings.qwen.cfg_green),
+        "cfg_orange": list(_settings.qwen.cfg_orange),
+        "default_cfg": _settings.qwen.default_cfg,
+        "db_path": str(_settings.db_path),
+        "previews_dir": str(_settings.previews_dir),
+        "exports_dir": str(_settings.exports_dir),
+    }
 
 
 # ---------- groups ----------
@@ -126,17 +131,3 @@ def api_delete_prompt(prompt_id: int):
     if not db.delete_prompt(prompt_id):
         raise HTTPException(404, "prompt not found")
     return JSONResponse(status_code=204, content=None)
-
-
-# ---------- meta ----------
-
-@app.get("/api/meta")
-def api_meta():
-    return {
-        "cfg_green": list(_settings.qwen.cfg_green),
-        "cfg_orange": list(_settings.qwen.cfg_orange),
-        "default_cfg": _settings.qwen.default_cfg,
-        "db_path": str(_settings.db_path),
-        "previews_dir": str(_settings.previews_dir),
-        "exports_dir": str(_settings.exports_dir),
-    }

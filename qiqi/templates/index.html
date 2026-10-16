@@ -78,11 +78,8 @@
 </div>
 
 <script>
-window.QIQI = {
-  cfgGreen: {{ cfg_green | tojson }},
-  cfgOrange: {{ cfg_orange | tojson }},
-  defaultCfg: {{ default_cfg | tojson }},
-};
+// Заполняется из /api/meta после загрузки страницы.
+window.QIQI = { cfgGreen: [2.0, 3.0], cfgOrange: [1.5, 4.0], defaultCfg: 2.5 };
 </script>
 <script src="/static/app.js"></script>
 </body>

@@ -223,6 +223,18 @@ async function deletePrompt() {
 // ---------- bindings ----------
 
 document.addEventListener('DOMContentLoaded', async () => {
+  // 1. Сначала тянем мета-настройки (cfg-зоны, default_cfg).
+  try {
+    const meta = await api.get('/api/meta');
+    window.QIQI = {
+      cfgGreen: meta.cfg_green,
+      cfgOrange: meta.cfg_orange,
+      defaultCfg: meta.default_cfg,
+    };
+  } catch (e) {
+    console.warn('Не удалось получить /api/meta, использую значения по умолчанию', e);
+  }
+
   renderMeta();
   await loadGroups();
 

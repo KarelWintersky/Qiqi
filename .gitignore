@@ -7,3 +7,4 @@ previews/
 exports/
 qiqi.yaml
 !qiqi.example.yaml
+/uv.lock
