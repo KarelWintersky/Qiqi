@@ -25,6 +25,7 @@ CREATE TABLE IF NOT EXISTS prompts (
     title TEXT NOT NULL DEFAULT '',
     positive TEXT NOT NULL DEFAULT '',
     negative TEXT NOT NULL DEFAULT '',
+    no_negative INTEGER NOT NULL DEFAULT 0,
     cfg REAL NOT NULL DEFAULT 2.5,
     comment TEXT NOT NULL DEFAULT '',
     rating INTEGER NOT NULL DEFAULT 0 CHECK(rating BETWEEN 0 AND 12),
@@ -77,6 +78,7 @@ class Database:
         self.path = path
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._init_schema()
+        self._migrate()
 
     @contextmanager
     def connect(self) -> Iterator[sqlite3.Connection]:
@@ -95,6 +97,15 @@ class Database:
     def _init_schema(self) -> None:
         with self.connect() as conn:
             conn.executescript(SCHEMA)
+
+    def _migrate(self) -> None:
+        """Простые миграции: добавляем колонки, если их нет."""
+        with self.connect() as conn:
+            cols = {r["name"] for r in conn.execute("PRAGMA table_info(prompts)")}
+            if "no_negative" not in cols:
+                conn.execute(
+                    "ALTER TABLE prompts ADD COLUMN no_negative INTEGER NOT NULL DEFAULT 0"
+                )
 
     # ---------- groups ----------
 
@@ -168,6 +179,7 @@ class Database:
         "title",
         "positive",
         "negative",
+        "no_negative",
         "cfg",
         "comment",
         "rating",
@@ -214,12 +226,15 @@ class Database:
 
     def create_prompt(self, data: dict[str, Any]) -> dict[str, Any]:
         ts = now_iso()
+        no_negative = 1 if data.get("no_negative") else 0
+        cfg = 1.0 if no_negative else float(data.get("cfg", 2.5))
         payload = {
             "group_id": data["group_id"],
             "title": data.get("title", ""),
             "positive": data.get("positive", ""),
             "negative": data.get("negative", ""),
-            "cfg": float(data.get("cfg", 2.5)),
+            "no_negative": no_negative,
+            "cfg": cfg,
             "comment": data.get("comment", ""),
             "rating": int(data.get("rating", 0)),
             "favorite": 1 if data.get("favorite") else 0,
@@ -228,15 +243,16 @@ class Database:
             cur = conn.execute(
                 """
                 INSERT INTO prompts(
-                    group_id, title, positive, negative, cfg,
+                    group_id, title, positive, negative, no_negative, cfg,
                     comment, rating, favorite, created_at, updated_at
-                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     payload["group_id"],
                     payload["title"],
                     payload["positive"],
                     payload["negative"],
+                    payload["no_negative"],
                     payload["cfg"],
                     payload["comment"],
                     payload["rating"],
@@ -252,8 +268,16 @@ class Database:
             return dict(row)
 
     def update_prompt(
-        self, prompt_id: int, data: dict[str, Any]
+            self, prompt_id: int, data: dict[str, Any]
     ) -> dict[str, Any] | None:
+        data = dict(data)
+
+        if data.get("no_negative"):
+            data["cfg"] = 1.0
+            data["no_negative"] = 1
+        elif "no_negative" in data and not data["no_negative"]:
+            data["no_negative"] = 0
+
         sets: list[str] = []
         args: list[Any] = []
         for field in self._PROMPT_FIELDS:
@@ -263,7 +287,7 @@ class Database:
                     value = float(value)
                 elif field == "rating":
                     value = int(value)
-                elif field == "favorite":
+                elif field in ("favorite", "no_negative"):
                     value = 1 if value else 0
                 sets.append(f"{field} = ?")
                 args.append(value)

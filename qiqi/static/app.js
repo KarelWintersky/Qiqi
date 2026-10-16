@@ -91,11 +91,11 @@ function renderPrompts() {
         ${p.favorite ? '<span class="fav">★</span>' : ''}
         <span class="title">${escapeHtml(p.title || '(без названия)')}</span>
         <span class="cfg-badge ${cfgClass(p.cfg)}">${p.cfg}</span>
+        ${p.no_negative ? '<span class="cfg-badge cfg-red" title="без негатива">no-neg</span>' : ''}
       </div>
       <div class="excerpt">${escapeHtml(excerpt)}</div>
       <div class="footer">
-        <span class="rating">${p.rating}/12</span>
-        <span>${escapeHtml((p.comment || '').slice(0, 60))}</span>
+        <span>${escapeHtml((p.comment || '').slice(0, 80))}</span>
       </div>
     `;
     card.onclick = () => openPromptModal(p.id);
@@ -126,6 +126,7 @@ function openGroupModal(id = null) {
     $('groupComment').value = g.comment || '';
   }
   modal.classList.remove('hidden');
+  setTimeout(() => { $('groupName').focus(); $('groupName').select(); }, 0);
 }
 
 async function saveGroup() {
@@ -154,6 +155,38 @@ async function deleteGroup() {
 
 // ---------- prompt modal ----------
 
+// ---------- prompt modal ----------
+
+const CFG_MAX = 6; // верхняя граница слайдера
+
+function setCfgSlider(value) {
+  const slider = $('pCfg');
+  const v = Number.isFinite(value) ? value : window.QIQI.defaultCfg;
+  const clamped = Math.max(0, Math.min(CFG_MAX, v));
+  slider.value = String(clamped);
+  updateCfgVisual();
+}
+
+function updateCfgVisual() {
+  const slider = $('pCfg');
+  const v = parseFloat(slider.value);
+  $('pCfgValue').textContent = v.toFixed(1);
+
+  slider.classList.remove('cfg-green', 'cfg-orange', 'cfg-red');
+  slider.classList.add(cfgClass(v));
+}
+
+function applyNoNegative() {
+  const noNeg = $('pNoNegative').checked;
+  const slider = $('pCfg');
+  if (noNeg) {
+    setCfgSlider(1.0);
+    slider.disabled = true;
+  } else {
+    slider.disabled = false;
+  }
+}
+
 function openPromptModal(id = null) {
   state.editingPromptId = id;
   const modal = $('promptModal');
@@ -165,40 +198,41 @@ function openPromptModal(id = null) {
     $('pTitle').value = '';
     $('pPositive').value = '';
     $('pNegative').value = '';
-    $('pCfg').value = window.QIQI.defaultCfg;
-    $('pRating').value = 0;
+    $('pNoNegative').checked = false;
     $('pFavorite').checked = false;
     $('pComment').value = '';
+    setCfgSlider(window.QIQI.defaultCfg);
+    $('pCfg').disabled = false;
   } else {
     const p = state.prompts.find(x => x.id === id);
     $('pTitle').value = p.title || '';
     $('pPositive').value = p.positive || '';
     $('pNegative').value = p.negative || '';
-    $('pCfg').value = p.cfg;
-    $('pRating').value = p.rating;
+    $('pNoNegative').checked = !!p.no_negative;
     $('pFavorite').checked = !!p.favorite;
     $('pComment').value = p.comment || '';
+    setCfgSlider(p.cfg);
+    applyNoNegative();
   }
-  updateCfgBadge();
-  modal.classList.remove('hidden');
-}
 
-function updateCfgBadge() {
-  const v = parseFloat($('pCfg').value);
-  const badge = $('pCfgBadge');
-  if (isNaN(v)) { badge.textContent = '—'; badge.className = 'cfg-badge'; return; }
-  badge.textContent = v;
-  badge.className = 'cfg-badge ' + cfgClass(v);
+  modal.classList.remove('hidden');
+
+  // фокус в "Название"
+  setTimeout(() => {
+    $('pTitle').focus();
+    $('pTitle').select();
+  }, 0);
 }
 
 async function savePrompt() {
+  const noNeg = $('pNoNegative').checked;
   const payload = {
     group_id: state.currentGroupId,
     title: $('pTitle').value,
     positive: $('pPositive').value,
     negative: $('pNegative').value,
-    cfg: parseFloat($('pCfg').value) || 0,
-    rating: parseInt($('pRating').value, 10) || 0,
+    no_negative: noNeg,
+    cfg: noNeg ? 1.0 : (parseFloat($('pCfg').value) || 0),
     favorite: $('pFavorite').checked,
     comment: $('pComment').value,
   };
@@ -211,6 +245,8 @@ async function savePrompt() {
   await loadPrompts();
   await loadGroups();
 }
+
+
 
 async function deletePrompt() {
   if (!confirm('Удалить промпт?')) return;
@@ -245,7 +281,9 @@ document.addEventListener('DOMContentLoaded', async () => {
   $('newPromptBtn').onclick = () => openPromptModal(null);
   $('promptSaveBtn').onclick = savePrompt;
   $('promptDeleteBtn').onclick = deletePrompt;
-  $('pCfg').addEventListener('input', updateCfgBadge);
+
+  $('pCfg').addEventListener('input', updateCfgVisual);
+    $('pNoNegative').addEventListener('change', applyNoNegative);
 
   document.querySelectorAll('[data-close]').forEach(b => {
     b.onclick = () => b.closest('.modal').classList.add('hidden');
@@ -255,4 +293,10 @@ document.addEventListener('DOMContentLoaded', async () => {
       if (e.target === m) m.classList.add('hidden');
     });
   });
+});
+
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape') return;
+  const open = document.querySelector('.modal:not(.hidden)');
+  if (open) open.classList.add('hidden');
 });

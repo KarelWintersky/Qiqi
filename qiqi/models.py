@@ -21,6 +21,7 @@ class PromptIn(BaseModel):
     title: str = ""
     positive: str = ""
     negative: str = ""
+    no_negative: bool = False
     cfg: float = 2.5
     comment: str = ""
     rating: int = Field(default=0, ge=0, le=12)
@@ -32,11 +33,11 @@ class PromptPatch(BaseModel):
     title: str | None = None
     positive: str | None = None
     negative: str | None = None
+    no_negative: bool | None = None
     cfg: float | None = None
     comment: str | None = None
     rating: int | None = Field(default=None, ge=0, le=12)
     favorite: bool | None = None
-
 
 class JobOrderIn(BaseModel):
     size: Literal["preview", "fullsize"]
